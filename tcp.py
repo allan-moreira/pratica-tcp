@@ -1,5 +1,5 @@
 import asyncio
-from tcputils import *
+from grader import tcputils
 import random
 
 
@@ -19,23 +19,23 @@ class Servidor:
         self.callback = callback
 
     def _rdt_rcv(self, src_addr, dst_addr, segment):
-        src_port, dst_port, seq_no, ack_no, flags, window_size, checksum, urg_ptr = read_header(segment)
+        src_port, dst_port, seq_no, ack_no, flags, window_size, checksum, urg_ptr = tcputils.read_header(segment)
 
         if dst_port != self.porta:
             # Ignora segmentos que não são destinados à porta do nosso servidor
             return
-        if not self.rede.ignore_checksum and calc_checksum(segment, src_addr, dst_addr) != 0:
+        if not self.rede.ignore_checksum and tcputils.calc_checksum(segment, src_addr, dst_addr) != 0:
             print('descartando segmento com checksum incorreto')
             return
 
         payload = segment[4*(flags>>12):]
         id_conexao = (src_addr, src_port, dst_addr, dst_port)
 
-        if (flags & FLAGS_SYN) == FLAGS_SYN:
-            conexao = self.conexoes[id_conexao] = Conexao(self, id_conexao)
-            flags = FLAGS_SYN | FLAGS_ACK
-            header = make_header(dst_port, src_port, conexao.servidor_seq_no, seq_no + 1, flags)
-            segment = fix_checksum(header, dst_addr, src_addr)
+        if (flags & tcputils.FLAGS_SYN) == tcputils.FLAGS_SYN:
+            conexao = self.conexoes[id_conexao] = Conexao(self, id_conexao, seq_no)
+            flags = tcputils.FLAGS_SYN | tcputils.FLAGS_ACK
+            header = tcputils.make_header(dst_port, src_port, conexao.servidor_seq_no, seq_no + 1, flags)
+            segment = tcputils.fix_checksum(header, dst_addr, src_addr)
             self.rede.enviar(segment, src_addr)
             
             # TODO: você precisa fazer o handshake aceitando a conexão. Escolha se você acha melhor
@@ -51,10 +51,11 @@ class Servidor:
 
 
 class Conexao:
-    def __init__(self, servidor, id_conexao):
+    def __init__(self, servidor, id_conexao, seq_no):
         self.servidor = servidor
         self.id_conexao = id_conexao
         self.servidor_seq_no = random.randint(0, 0xffff)
+        self.expected_seq_no = seq_no + 1
         self.callback = None
         self.timer = asyncio.get_event_loop().call_later(1, self._exemplo_timer)  # um timer pode ser criado assim; esta linha é só um exemplo e pode ser removida
         #self.timer.cancel()   # é possível cancelar o timer chamando esse método; esta linha é só um exemplo e pode ser removida
@@ -64,9 +65,18 @@ class Conexao:
         print('Este é um exemplo de como fazer um timer')
 
     def _rdt_rcv(self, seq_no, ack_no, flags, payload):
-        # TODO: trate aqui o recebimento de segmentos provenientes da camada de rede.
-        # Chame self.callback(self, dados) para passar dados para a camada de aplicação após
-        # garantir que eles não sejam duplicados e que tenham sido recebidos em ordem.
+        # Verifica se o segmento tem dados
+            # Aceita somente se for o próximo esperado (usa ack_no como base)
+            # Vamos supor que o próximo número de sequência esperado é ack_no
+            # (ou seja, o último que foi reconhecido pela outra ponta)
+            # Como o servidor não armazena isso, tomamos o ack_no do segmento como referência
+        if seq_no == self.expected_seq_no:
+            self.expected_seq_no += len(payload)
+            self.callback(self, payload)
+        src_addr, src_port, dst_addr, dst_port = self.id_conexao
+        header = tcputils.make_header(dst_port, src_port, self.servidor_seq_no, self.expected_seq_no, tcputils.FLAGS_ACK)
+        segment = tcputils.fix_checksum(header, dst_addr, src_addr)
+        self.servidor.rede.enviar(segment, src_addr)
         print('recebido payload: %r' % payload)
 
     # Os métodos abaixo fazem parte da API
